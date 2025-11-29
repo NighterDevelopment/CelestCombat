@@ -2,9 +2,16 @@ package dev.nighter.celestCombat.combat;
 
 import dev.nighter.celestCombat.CelestCombat;
 import dev.nighter.celestCombat.Scheduler;
+import dev.nighter.celestCombat.api.events.PlayerCombatTagEvent;
+import dev.nighter.celestCombat.api.events.PlayerCombatEndEvent;
+import dev.nighter.celestCombat.api.events.PlayerCooldownSetEvent;
 import lombok.Getter;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
+import org.bukkit.inventory.PlayerInventory;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -27,10 +34,11 @@ public class CombatManager {
 
     // Combat configuration cache to avoid repeated config lookups
     private long combatDurationTicks;
-    private long combatDurationSeconds;
+    private long combatDurationMillis;
     private boolean disableFlightInCombat;
+    private boolean enableActionbar;
     private long enderPearlCooldownTicks;
-    private long enderPearlCooldownSeconds;
+    private long enderPearlCooldownMillis;
     private Map<String, Boolean> worldEnderPearlSettings = new ConcurrentHashMap<>();
     private boolean enderPearlInCombatOnly;
     private boolean enderPearlEnabled;
@@ -38,12 +46,15 @@ public class CombatManager {
 
     // Trident configuration cache
     private long tridentCooldownTicks;
-    private long tridentCooldownSeconds;
+    private long tridentCooldownMillis;
     private Map<String, Boolean> worldTridentSettings = new ConcurrentHashMap<>();
     private boolean tridentInCombatOnly;
     private boolean tridentEnabled;
     private boolean refreshCombatOnTridentLand;
     private Map<String, Boolean> worldTridentBannedSettings = new ConcurrentHashMap<>();
+    
+    // Combat disabled worlds configuration
+    private Map<String, Boolean> combatDisabledWorlds = new ConcurrentHashMap<>();
 
     // Cleanup task for expired cooldowns
     private Scheduler.Task cleanupTask;
@@ -58,17 +69,18 @@ public class CombatManager {
 
         // Cache configuration values to avoid repeated lookups
         this.combatDurationTicks = plugin.getTimeFromConfig("combat.duration", "20s");
-        this.combatDurationSeconds = combatDurationTicks / 20;
+        this.combatDurationMillis = combatDurationTicks * 50;
         this.disableFlightInCombat = plugin.getConfig().getBoolean("combat.disable_flight", true);
+        this.enableActionbar = plugin.getConfig().getBoolean("enable_actionbar", true);
 
         this.enderPearlCooldownTicks = plugin.getTimeFromConfig("enderpearl_cooldown.duration", "10s");
-        this.enderPearlCooldownSeconds = enderPearlCooldownTicks / 20;
+        this.enderPearlCooldownMillis = enderPearlCooldownTicks * 50;
         this.enderPearlEnabled = plugin.getConfig().getBoolean("enderpearl_cooldown.enabled", true);
         this.enderPearlInCombatOnly = plugin.getConfig().getBoolean("enderpearl_cooldown.in_combat_only", true);
         this.refreshCombatOnPearlLand = plugin.getConfig().getBoolean("enderpearl.refresh_combat_on_land", false);
 
         this.tridentCooldownTicks = plugin.getTimeFromConfig("trident_cooldown.duration", "10s");
-        this.tridentCooldownSeconds = tridentCooldownTicks / 20;
+        this.tridentCooldownMillis = tridentCooldownTicks * 50;
         this.tridentEnabled = plugin.getConfig().getBoolean("trident_cooldown.enabled", true);
         this.tridentInCombatOnly = plugin.getConfig().getBoolean("trident_cooldown.in_combat_only", true);
         this.refreshCombatOnTridentLand = plugin.getConfig().getBoolean("trident.refresh_combat_on_land", false);
@@ -78,6 +90,9 @@ public class CombatManager {
 
         // Load per-world settings
         loadWorldEnderPearlSettings();
+        
+        // Load combat disabled worlds
+        loadCombatDisabledWorlds();
 
         // Start the global countdown timer
         startGlobalCountdownTimer();
@@ -109,22 +124,24 @@ public class CombatManager {
     public void reloadConfig() {
         // Update cached configuration values
         this.combatDurationTicks = plugin.getTimeFromConfig("combat.duration", "20s");
-        this.combatDurationSeconds = combatDurationTicks / 20;
+        this.combatDurationMillis = combatDurationTicks * 50;
         this.disableFlightInCombat = plugin.getConfig().getBoolean("combat.disable_flight", true);
+        this.enableActionbar = plugin.getConfig().getBoolean("enable_actionbar", true);
 
         this.enderPearlCooldownTicks = plugin.getTimeFromConfig("enderpearl_cooldown.duration", "10s");
-        this.enderPearlCooldownSeconds = enderPearlCooldownTicks / 20;
+        this.enderPearlCooldownMillis = enderPearlCooldownTicks * 50;
         this.enderPearlEnabled = plugin.getConfig().getBoolean("enderpearl_cooldown.enabled", true);
         this.enderPearlInCombatOnly = plugin.getConfig().getBoolean("enderpearl_cooldown.in_combat_only", true);
         this.refreshCombatOnPearlLand = plugin.getConfig().getBoolean("enderpearl.refresh_combat_on_land", false);
         loadWorldEnderPearlSettings();
 
         this.tridentCooldownTicks = plugin.getTimeFromConfig("trident_cooldown.duration", "10s");
-        this.tridentCooldownSeconds = tridentCooldownTicks / 20;
+        this.tridentCooldownMillis = tridentCooldownTicks * 50;
         this.tridentEnabled = plugin.getConfig().getBoolean("trident_cooldown.enabled", true);
         this.tridentInCombatOnly = plugin.getConfig().getBoolean("trident_cooldown.in_combat_only", true);
         this.refreshCombatOnTridentLand = plugin.getConfig().getBoolean("trident.refresh_combat_on_land", false);
         loadWorldTridentSettings();
+        loadCombatDisabledWorlds();
     }
 
 
@@ -136,6 +153,17 @@ public class CombatManager {
             for (String worldName : Objects.requireNonNull(plugin.getConfig().getConfigurationSection("enderpearl_cooldown.worlds")).getKeys(false)) {
                 boolean enabled = plugin.getConfig().getBoolean("enderpearl_cooldown.worlds." + worldName, true);
                 worldEnderPearlSettings.put(worldName, enabled);
+            }
+        }
+    }
+    
+    private void loadCombatDisabledWorlds() {
+        combatDisabledWorlds.clear();
+
+        if (plugin.getConfig().isConfigurationSection("combat.disabled_worlds")) {
+            for (String worldName : Objects.requireNonNull(plugin.getConfig().getConfigurationSection("combat.disabled_worlds")).getKeys(false)) {
+                boolean disabled = plugin.getConfig().getBoolean("combat.disabled_worlds." + worldName, false);
+                combatDisabledWorlds.put(worldName, disabled);
             }
         }
     }
@@ -192,7 +220,7 @@ public class CombatManager {
     }
 
     private void updatePlayerCountdown(Player player, long currentTime) {
-        if (player == null || !player.isOnline()) return;
+        if (player == null || !player.isOnline() || !enableActionbar) return;
 
         UUID playerUUID = player.getUniqueId();
         boolean inCombat = playersInCombat.containsKey(playerUUID) &&
@@ -264,56 +292,119 @@ public class CombatManager {
     }
 
     public void tagPlayer(Player player, Player attacker) {
-        if (player == null || attacker == null) return;
+        plugin.debug("=== TAG PLAYER DEBUG ===");
+        plugin.debug("Player: " + (player != null ? player.getName() : "null"));
+        plugin.debug("Attacker: " + (attacker != null ? attacker.getName() : "null"));
+
+        if (player == null || attacker == null) {
+            plugin.debug("Player or attacker is null, aborting tag");
+            return;
+        }
 
         if (player.hasPermission("celestcombat.bypass.tag")) {
+            plugin.debug("Player has bypass permission, skipping tag");
+            return;
+        }
+
+        String worldName = player.getWorld().getName();
+        plugin.debug("Player world: " + worldName);
+
+        if (combatDisabledWorlds.getOrDefault(worldName, false)) {
+            plugin.debug("Combat is disabled in world " + worldName + ", skipping tag");
+            return;
+        }
+
+        plugin.debug("Calling PlayerCombatTagEvent for " + player.getName());
+        PlayerCombatTagEvent event = new PlayerCombatTagEvent(player, attacker, combatDurationMillis);
+        Bukkit.getPluginManager().callEvent(event);
+
+        if (event.isCancelled()) {
+            plugin.debug("PlayerCombatTagEvent was cancelled by another plugin");
             return;
         }
 
         UUID playerUUID = player.getUniqueId();
-        long newEndTime = System.currentTimeMillis() + (combatDurationSeconds * 1000L);
+        long newEndTime = System.currentTimeMillis() + combatDurationMillis;
 
         boolean alreadyInCombat = playersInCombat.containsKey(playerUUID);
         boolean alreadyInCombatWithAttacker = alreadyInCombat &&
                 attacker.getUniqueId().equals(combatOpponents.get(playerUUID));
 
+        plugin.debug("Already in combat: " + alreadyInCombat);
+        plugin.debug("Already in combat with this attacker: " + alreadyInCombatWithAttacker);
+
         if (alreadyInCombatWithAttacker) {
             long currentEndTime = playersInCombat.get(playerUUID);
             if (newEndTime <= currentEndTime) {
-                return; // Don't reset the timer if it would make it shorter
+                plugin.debug("Combat time not extended (new: " + newEndTime + " <= current: " + currentEndTime + ")");
+                return;
             }
+            plugin.debug("Extending combat time from " + currentEndTime + " to " + newEndTime);
         }
 
-        // Check if we should disable flight
-        if (shouldDisableFlight(player) && player.isFlying()) {
+        if (disableFlightInCombat) {
+            plugin.debug("Disabling flight for " + player.getName());
             player.setFlying(false);
+            player.setAllowFlight(false);
         }
 
         combatOpponents.put(playerUUID, attacker.getUniqueId());
         playersInCombat.put(playerUUID, newEndTime);
+        plugin.debug("Player " + player.getName() + " tagged in combat with " + attacker.getName());
 
-        // Cancel existing task if any
         Scheduler.Task existingTask = combatTasks.get(playerUUID);
         if (existingTask != null) {
+            plugin.debug("Cancelling existing combat task for " + player.getName());
             existingTask.cancel();
         }
+
+        plugin.debug("=== END TAG PLAYER DEBUG ===");
     }
 
     public void punishCombatLogout(Player player) {
         if (player == null) return;
 
+        simulateItemDrops(player);
         player.setHealth(0);
         removeFromCombat(player);
     }
 
     public void removeFromCombat(Player player) {
+        removeFromCombat(player, PlayerCombatEndEvent.EndReason.EXPIRED);
+    }
+
+    public static void simulateItemDrops(Player player) {
+        Location deathLocation = player.getLocation();
+        PlayerInventory inventory = player.getInventory();
+
+        ItemStack[] allContents = inventory.getContents();
+        for (ItemStack item : allContents) {
+            if (item != null && item.getType() != Material.AIR) {
+                Location dropLocation = deathLocation.clone().add(
+                        (Math.random() - 0.5) * 1,
+                        0.5,
+                        (Math.random() - 0.5) * 1
+                );
+                deathLocation.getWorld().dropItemNaturally(dropLocation, item);
+            }
+        }
+
+        player.getInventory().clear();
+    }
+
+    public void removeFromCombat(Player player, PlayerCombatEndEvent.EndReason reason) {
         if (player == null) return;
 
         UUID playerUUID = player.getUniqueId();
 
         if (!playersInCombat.containsKey(playerUUID)) {
-            return; // Player is not in combat
+            return;
         }
+
+        Player lastOpponent = getCombatOpponent(player);
+        
+        PlayerCombatEndEvent event = new PlayerCombatEndEvent(player, lastOpponent, reason);
+        Bukkit.getPluginManager().callEvent(event);
 
         playersInCombat.remove(playerUUID);
         combatOpponents.remove(playerUUID);
@@ -323,7 +414,6 @@ public class CombatManager {
             task.cancel();
         }
 
-        // Send appropriate message if player was in combat
         if (player.isOnline()) {
             plugin.getMessageService().sendMessage(player, "combat_expired");
         }
@@ -334,6 +424,15 @@ public class CombatManager {
 
         UUID playerUUID = player.getUniqueId();
 
+        if (!playersInCombat.containsKey(playerUUID)) {
+            return;
+        }
+
+        Player lastOpponent = getCombatOpponent(player);
+        
+        PlayerCombatEndEvent event = new PlayerCombatEndEvent(player, lastOpponent, PlayerCombatEndEvent.EndReason.REMOVED_BY_PLUGIN);
+        Bukkit.getPluginManager().callEvent(event);
+
         playersInCombat.remove(playerUUID);
         combatOpponents.remove(playerUUID);
 
@@ -341,8 +440,6 @@ public class CombatManager {
         if (task != null) {
             task.cancel();
         }
-
-        // No message is sent
     }
 
     public Player getCombatOpponent(Player player) {
@@ -389,6 +486,24 @@ public class CombatManager {
         long endTime = playersInCombat.get(playerUUID);
         return (int) Math.ceil(Math.max(0, (endTime - currentTime) / 1000.0));
     }
+    
+    public long getRemainingCombatTimeMillis(Player player) {
+        return getRemainingCombatTimeMillis(player, System.currentTimeMillis());
+    }
+    
+    private long getRemainingCombatTimeMillis(Player player, long currentTime) {
+        if (player == null) return 0;
+
+        UUID playerUUID = player.getUniqueId();
+        if (!playersInCombat.containsKey(playerUUID)) return 0;
+
+        long endTime = playersInCombat.get(playerUUID);
+        return Math.max(0, endTime - currentTime);
+    }
+    
+    public double getRemainingCombatTimeSeconds(Player player) {
+        return getRemainingCombatTimeMillis(player) / 1000.0;
+    }
 
     public void updateMutualCombat(Player player1, Player player2) {
         if (player1 != null && player1.isOnline() && player2 != null && player2.isOnline()) {
@@ -401,8 +516,14 @@ public class CombatManager {
     public void setEnderPearlCooldown(Player player) {
         if (player == null) return;
 
-        // Only set cooldown if enabled in config
         if (!enderPearlEnabled) {
+            return;
+        }
+        
+        PlayerCooldownSetEvent event = new PlayerCooldownSetEvent(player, PlayerCooldownSetEvent.CooldownType.ENDER_PEARL, enderPearlCooldownMillis);
+        Bukkit.getPluginManager().callEvent(event);
+        
+        if (event.isCancelled()) {
             return;
         }
 
@@ -418,7 +539,7 @@ public class CombatManager {
         }
 
         enderPearlCooldowns.put(player.getUniqueId(),
-                System.currentTimeMillis() + (enderPearlCooldownSeconds * 1000L));
+                System.currentTimeMillis() + enderPearlCooldownMillis);
     }
 
     public boolean isEnderPearlOnCooldown(Player player) {
@@ -463,7 +584,7 @@ public class CombatManager {
         if (!isInCombat(player)) return;
 
         UUID playerUUID = player.getUniqueId();
-        long newEndTime = System.currentTimeMillis() + (combatDurationSeconds * 1000L);
+        long newEndTime = System.currentTimeMillis() + combatDurationMillis;
         long currentEndTime = playersInCombat.getOrDefault(playerUUID, 0L);
 
         // Only extend the combat time, don't shorten it
@@ -488,6 +609,24 @@ public class CombatManager {
         long endTime = enderPearlCooldowns.get(playerUUID);
         return (int) Math.ceil(Math.max(0, (endTime - currentTime) / 1000.0));
     }
+    
+    public long getRemainingEnderPearlCooldownMillis(Player player) {
+        return getRemainingEnderPearlCooldownMillis(player, System.currentTimeMillis());
+    }
+    
+    private long getRemainingEnderPearlCooldownMillis(Player player, long currentTime) {
+        if (player == null) return 0;
+
+        UUID playerUUID = player.getUniqueId();
+        if (!enderPearlCooldowns.containsKey(playerUUID)) return 0;
+
+        long endTime = enderPearlCooldowns.get(playerUUID);
+        return Math.max(0, endTime - currentTime);
+    }
+    
+    public double getRemainingEnderPearlCooldownSeconds(Player player) {
+        return getRemainingEnderPearlCooldownMillis(player) / 1000.0;
+    }
 
     public boolean shouldDisableFlight(Player player) {
         if (player == null) return false;
@@ -498,18 +637,20 @@ public class CombatManager {
         }
 
         // Flight should be disabled - notify the player
-        Map<String, String> placeholders = new HashMap<>();
-        placeholders.put("player", player.getName());
-        plugin.getMessageService().sendMessage(player, "combat_fly_disabled", placeholders);
-
-        return true;
+        return player.isFlying();
     }
 
     public void setTridentCooldown(Player player) {
         if (player == null) return;
 
-        // Only set cooldown if enabled in config
         if (!tridentEnabled) {
+            return;
+        }
+        
+        PlayerCooldownSetEvent event = new PlayerCooldownSetEvent(player, PlayerCooldownSetEvent.CooldownType.TRIDENT, tridentCooldownMillis);
+        Bukkit.getPluginManager().callEvent(event);
+        
+        if (event.isCancelled()) {
             return;
         }
 
@@ -525,7 +666,7 @@ public class CombatManager {
         }
 
         tridentCooldowns.put(player.getUniqueId(),
-                System.currentTimeMillis() + (tridentCooldownSeconds * 1000L));
+                System.currentTimeMillis() + tridentCooldownMillis);
     }
 
     public boolean isTridentOnCooldown(Player player) {
@@ -578,7 +719,7 @@ public class CombatManager {
         if (!isInCombat(player)) return;
 
         UUID playerUUID = player.getUniqueId();
-        long newEndTime = System.currentTimeMillis() + (combatDurationSeconds * 1000L);
+        long newEndTime = System.currentTimeMillis() + combatDurationMillis;
         long currentEndTime = playersInCombat.getOrDefault(playerUUID, 0L);
 
         // Only extend the combat time, don't shorten it
@@ -602,6 +743,24 @@ public class CombatManager {
 
         long endTime = tridentCooldowns.get(playerUUID);
         return (int) Math.ceil(Math.max(0, (endTime - currentTime) / 1000.0));
+    }
+    
+    public long getRemainingTridentCooldownMillis(Player player) {
+        return getRemainingTridentCooldownMillis(player, System.currentTimeMillis());
+    }
+    
+    private long getRemainingTridentCooldownMillis(Player player, long currentTime) {
+        if (player == null) return 0;
+
+        UUID playerUUID = player.getUniqueId();
+        if (!tridentCooldowns.containsKey(playerUUID)) return 0;
+
+        long endTime = tridentCooldowns.get(playerUUID);
+        return Math.max(0, endTime - currentTime);
+    }
+    
+    public double getRemainingTridentCooldownSeconds(Player player) {
+        return getRemainingTridentCooldownMillis(player) / 1000.0;
     }
 
 

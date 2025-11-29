@@ -18,6 +18,10 @@ language: en_US
 # Enable or disable debug mode (provides verbose console output)
 debug: false
 
+# Enable or disable actionbar display globally
+# If false, no actionbar messages will be sent (combat, cooldowns, protection, etc.)
+enable_actionbar: true
+
 #---------------------------------------------------
 #              CORE COMBAT SETTINGS
 #---------------------------------------------------
@@ -66,6 +70,13 @@ combat:
 
   # Disable flight (Creative fly) during combat
   disable_flight: false
+
+  # Worlds where combat tagging is disabled
+  # Players in these worlds will never be tagged in combat
+  disabled_worlds:
+    # spawn_world: true  # Example: disable combat tagging in spawn world
+    # minigames: true    # Example: disable combat tagging in minigames world
+    # Add world names as needed
 
   # Items blocked during combat (Foods, Potions, Elytra)
   item_restrictions:
@@ -219,6 +230,11 @@ safezone_protection:
   # Enable/disable WorldGuard integration for safezone barriers
   # This will prevent players from entering safezones while in combat
   enabled: true
+
+  # Enable/disable visual barriers (blocks sent to client)
+  # If disabled, players will only be pushed back without seeing barrier blocks
+  # This can improve performance by reducing packet usage
+  show_barriers: true
 
   # Block type for the barrier
   # Set "BARRIER" for invisible but solid barrier

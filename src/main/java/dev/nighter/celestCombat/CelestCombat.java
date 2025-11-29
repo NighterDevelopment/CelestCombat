@@ -1,6 +1,7 @@
 package dev.nighter.celestCombat;
 
 import com.sk89q.worldguard.WorldGuard;
+import dev.nighter.celestCombat.api.CelestCombatAPI;
 import dev.nighter.celestCombat.bstats.Metrics;
 import dev.nighter.celestCombat.combat.CombatManager;
 import dev.nighter.celestCombat.combat.DeathAnimationManager;
@@ -14,6 +15,7 @@ import dev.nighter.celestCombat.hooks.protection.WorldGuardHook;
 import dev.nighter.celestCombat.hooks.protection.GriefPreventionHook;
 import dev.nighter.celestCombat.listeners.ItemRestrictionListener;
 import dev.nighter.celestCombat.listeners.TridentListener;
+import dev.nighter.celestCombat.listeners.TeleportListener;
 import dev.nighter.celestCombat.protection.NewbieProtectionManager;
 import dev.nighter.celestCombat.rewards.KillRewardManager;
 import dev.nighter.celestCombat.updates.ConfigUpdater;
@@ -43,6 +45,7 @@ public final class CelestCombat extends JavaPlugin {
     private CombatListeners combatListeners;
     private EnderPearlListener enderPearlListener;
     private TridentListener tridentListener;
+    private TeleportListener teleportListener;
     private DeathAnimationManager deathAnimationManager;
     private NewbieProtectionManager newbieProtectionManager;
     private WorldGuardHook worldGuardHook;
@@ -84,6 +87,9 @@ public final class CelestCombat extends JavaPlugin {
 
         getServer().getPluginManager().registerEvents(new ItemRestrictionListener(this, combatManager), this);
 
+        teleportListener = new TeleportListener(this, combatManager);
+        getServer().getPluginManager().registerEvents(teleportListener, this);
+
         // WorldGuard integration
         if (hasWorldGuard && getConfig().getBoolean("safezone_protection.enabled", true)) {
             worldGuardHook = new WorldGuardHook(this, combatManager);
@@ -104,6 +110,8 @@ public final class CelestCombat extends JavaPlugin {
 
         commandManager = new CommandManager(this);
         commandManager.registerCommands();
+
+        CelestCombatAPI.setPlugin(this);
 
         setupBtatsMetrics();
 
@@ -127,6 +135,10 @@ public final class CelestCombat extends JavaPlugin {
 
         if (tridentListener != null) {
             tridentListener.shutdown();
+        }
+
+        if (teleportListener != null) {
+            teleportListener.cleanup();
         }
 
         if (worldGuardHook != null) {
